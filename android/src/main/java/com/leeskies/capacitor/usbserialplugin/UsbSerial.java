@@ -25,9 +25,18 @@ import java.util.Map;
 
 public class UsbSerial {
     private static final String TAG = "UsbSerial";
+
     private final Context context;
     private final UsbManager manager;
-    private final Map<String, UsbSerialPort> activePorts = new HashMap<>();
+
+    /** Puerto + conexión nativa para poder cerrar todo correctamente */
+    static class PortBundle {
+        final UsbSerialPort port;
+        final UsbDeviceConnection conn;
+        PortBundle(UsbSerialPort p, UsbDeviceConnection c) { this.port = p; this.conn = c; }
+    }
+
+    private final Map<String, PortBundle> active = new HashMap<>();
 
     private static String toHex(byte[] b, int len) {
         StringBuilder sb = new StringBuilder();
@@ -129,7 +138,7 @@ public class UsbSerial {
         int dataBits  = call.getInt("dataBits",  Const.DEFAULT_DATA_BITS);
         int stopBits  = call.getInt("stopBits",  Const.DEFAULT_STOP_BITS);
 
-        // Paridad: el JS te puede enviar string ("none"/"even"/...) o número (0..4). Soporta ambas.
+        // Paridad: puede venir como string ("none"/"even"/...) o número (0..4). Soporta ambas.
         int parity = Const.DEFAULT_PARITY;
         if (call.hasOption("parity")) {
             try {
@@ -144,7 +153,7 @@ public class UsbSerial {
 
         if (!Const.STOP_BITS.containsKey(stopBits)) {
             call.reject("Invalid value for stopBits: " + stopBits);
-            return; // <-- importante: salir si es inválido
+            return;
         }
 
         UsbDeviceConnection connection = manager.openDevice(device);
@@ -156,35 +165,37 @@ public class UsbSerial {
         UsbSerialPort port = driver.getPorts().get(0);
         try {
             port.open(connection);
-
-            // --- CAMBIOS CLAVE ---
             port.setParameters(baudRate, dataBits, stopBits, parity);
-            port.setDTR(true);                                  // activa DTR
-            port.setRTS(true);                                  // activa RTS
-            port.purgeHwBuffers(true, true);                    // limpia RX/TX
-            // ---------------------
-            
+            port.setDTR(true);
+            port.setRTS(true);
+            port.purgeHwBuffers(true, true);
+
             Log.d(TAG, "OPEN ok @ " + baudRate + " " + dataBits + "N" + stopBits + " DTR/RTS=ON");
 
             String key = generatePortKey(device);
-            activePorts.put(key, port);
+            active.put(key, new PortBundle(port, connection));
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "open/init failed", e);
+            try { port.close(); } catch (Exception ignore) {}
+            try { connection.close(); } catch (Exception ignore) {}
             call.reject("Failed to initialize connection with selected device: " + e.getMessage());
         }
     }
 
     public void endConnection(PluginCall call) {
         String portKey = call.getString("key");
-        if (portKey == null || !activePorts.containsKey(portKey)) {
+        if (portKey == null || !active.containsKey(portKey)) {
             call.reject("Invalid port key");
             return;
         }
+        PortBundle pb = active.get(portKey);
         try {
-            UsbSerialPort port = activePorts.get(portKey);
-            port.close();
-            activePorts.remove(portKey);
+            try { pb.port.purgeHwBuffers(true, true); } catch (Exception ignore) {}
+            try { pb.port.setDTR(false); pb.port.setRTS(false); } catch (Exception ignore) {}
+            try { pb.port.close(); } catch (Exception ignore) {}
+            try { pb.conn.close(); } catch (Exception ignore) {}
+            active.remove(portKey);
             call.resolve();
         } catch (Exception e) {
             call.reject("Failed to close port: " + e.getMessage());
@@ -193,14 +204,18 @@ public class UsbSerial {
 
     public void endConnections(PluginCall call) {
         List<String> errors = new ArrayList<>();
-        for (Map.Entry<String, UsbSerialPort> entry : activePorts.entrySet()) {
-            try {
-                entry.getValue().close();
-            } catch (Exception e) {
+        for (Map.Entry<String, PortBundle> entry : active.entrySet()) {
+            PortBundle pb = entry.getValue();
+            try { pb.port.purgeHwBuffers(true, true); } catch (Exception ignore) {}
+            try { pb.port.setDTR(false); pb.port.setRTS(false); } catch (Exception ignore) {}
+            try { pb.port.close(); } catch (Exception e) {
                 errors.add("Failed to close port " + entry.getKey() + ": " + e.getMessage());
             }
+            try { pb.conn.close(); } catch (Exception e) {
+                errors.add("Failed to close conn " + entry.getKey() + ": " + e.getMessage());
+            }
         }
-        activePorts.clear();
+        active.clear();
         if (errors.isEmpty()) {
             call.resolve();
         } else {
@@ -211,14 +226,17 @@ public class UsbSerial {
     public void endConnections(PluginCall call, List<String> keys) {
         List<String> errors = new ArrayList<>();
         for (String key : keys) {
-            UsbSerialPort port = activePorts.get(key);
-            if (port != null) {
-                try {
-                    port.close();
-                    activePorts.remove(key);
-                } catch (Exception e) {
+            PortBundle pb = active.get(key);
+            if (pb != null) {
+                try { pb.port.purgeHwBuffers(true, true); } catch (Exception ignore) {}
+                try { pb.port.setDTR(false); pb.port.setRTS(false); } catch (Exception ignore) {}
+                try { pb.port.close(); } catch (Exception e) {
                     errors.add("Failed to close port " + key + ": " + e.getMessage());
                 }
+                try { pb.conn.close(); } catch (Exception e) {
+                    errors.add("Failed to close conn " + key + ": " + e.getMessage());
+                }
+                active.remove(key);
             } else {
                 errors.add("Port not found: " + key);
             }
@@ -233,23 +251,20 @@ public class UsbSerial {
     public void write(PluginCall call) {
         String portKey = call.getString("key");
         String message = call.getString("message");
-        // Boolean noRead = call.getBoolean("noRead", false);  // ya no usamos noRead
-        UsbSerialPort port = activePorts.get(portKey);
-        if (port == null) {
+        PortBundle pb = active.get(portKey);
+        if (pb == null) {
             call.reject("Specified port not found: " + portKey);
             return;
         }
 
         try {
             byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
-            port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
+            pb.port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
             Log.d(TAG, "WRITE " + messageBytes.length + "B: " + toHex(messageBytes, messageBytes.length));
 
-            // ✅ NO LEER DESPUÉS DE ESCRIBIR
             JSObject result = new JSObject();
             result.put("bytesWritten", messageBytes.length);
             call.resolve(result);
-
         } catch (Exception e) {
             call.reject("Communication with port failed: " + e.getMessage());
         }
@@ -257,8 +272,8 @@ public class UsbSerial {
 
     public void read(PluginCall call) {
         String portKey = call.getString("key");
-        UsbSerialPort port = activePorts.get(portKey);
-        if (port == null) {
+        PortBundle pb = active.get(portKey);
+        if (pb == null) {
             call.reject("Specified port not found");
             return;
         }
@@ -270,12 +285,12 @@ public class UsbSerial {
             StringBuilder out = new StringBuilder();
 
             while (System.currentTimeMillis() < end) {
-                int n = port.read(buf, 100); // trozos de 100 ms
+                int n = pb.port.read(buf, 100); // trozos de 100 ms
                 if (n > 0) {
                     total += n;
                     Log.d(TAG, "READ chunk n=" + n + " HEX=" + toHex(buf, n));
                     out.append(new String(buf, 0, n, StandardCharsets.UTF_8));
-                    if (n < buf.length) break; // heurística: no parece haber más
+                    if (n < buf.length) break; // heurística: probablemente no hay más
                 }
             }
 
@@ -291,7 +306,7 @@ public class UsbSerial {
     public void getActivePorts(PluginCall call) {
         JSObject result = new JSObject();
         JSArray keysArray = new JSArray();
-        for (String key : activePorts.keySet()) {
+        for (String key : active.keySet()) {
             keysArray.put(key);
         }
         result.put("ports", keysArray);
