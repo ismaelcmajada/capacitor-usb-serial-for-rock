@@ -1,6 +1,6 @@
 {
   "name": "capacitor-usb-serial-for-rock",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "This capacitor plugin allows basic serial-over-usb functionality",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
