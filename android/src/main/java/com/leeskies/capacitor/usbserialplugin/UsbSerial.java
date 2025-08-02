@@ -295,7 +295,7 @@ public class UsbSerial {
             }
 
             JSObject result = new JSObject();
-            result.put("data", out.toString().trim());
+            result.put("data", out.toString());
             result.put("bytesRead", total);
             call.resolve(result);
         } catch (Exception e) {
