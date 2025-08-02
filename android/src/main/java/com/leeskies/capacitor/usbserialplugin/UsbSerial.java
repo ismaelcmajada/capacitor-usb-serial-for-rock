@@ -8,6 +8,7 @@ import android.content.IntentFilter;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
+import android.util.Log;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -23,9 +24,16 @@ import java.util.List;
 import java.util.Map;
 
 public class UsbSerial {
-    private Context context;
-    private UsbManager manager;
-    private Map<String, UsbSerialPort> activePorts = new HashMap<>();
+    private static final String TAG = "UsbSerial";
+    private final Context context;
+    private final UsbManager manager;
+    private final Map<String, UsbSerialPort> activePorts = new HashMap<>();
+
+    private static String toHex(byte[] b, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) sb.append(String.format("%02X ", b[i]));
+        return sb.toString().trim();
+    }
 
     private String generatePortKey(UsbDevice device) {
         return device.getDeviceName() + "_" + device.getDeviceId();
@@ -50,7 +58,6 @@ public class UsbSerial {
             deviceInfo.put("deviceName", device.getDeviceName());
             deviceList.add(deviceInfo);
         }
-
         return deviceList;
     }
 
@@ -62,6 +69,7 @@ public class UsbSerial {
             call.reject("DeviceId cannot be null");
             return;
         }
+
         for (UsbSerialDriver driver : UsbSerialProber.getDefaultProber().findAllDrivers(manager)) {
             if (driver.getDevice().getDeviceId() == deviceId) {
                 UsbDevice device = driver.getDevice();
@@ -84,12 +92,13 @@ public class UsbSerial {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        PendingIntent permissionIntent = PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
+        PendingIntent permissionIntent =
+                PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
 
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
         BroadcastReceiver usbReceiver = new BroadcastReceiver() {
             @Override
-            public void onReceive(Context context, Intent intent) {
+            public void onReceive(Context ctx, Intent intent) {
                 String action = intent.getAction();
                 if (ACTION_USB_PERMISSION.equals(action)) {
                     synchronized (this) {
@@ -98,12 +107,16 @@ public class UsbSerial {
                             if (usbDevice != null) {
                                 UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(usbDevice);
                                 proceedWithConnection(driver, usbDevice, call);
+                            } else {
+                                call.reject("USB device was null after granting permission");
                             }
                         } else {
                             call.reject("USB permission denied");
                         }
                     }
-                    context.unregisterReceiver(this);
+                    try {
+                        ctx.unregisterReceiver(this);
+                    } catch (IllegalArgumentException ignore) { }
                 }
             }
         };
@@ -113,25 +126,51 @@ public class UsbSerial {
 
     private void proceedWithConnection(UsbSerialDriver driver, UsbDevice device, PluginCall call) {
         int baudRate = call.getInt("baudRate", Const.DEFAULT_BAUD_RATE);
-        int dataBits = call.getInt("dataBits", Const.DEFAULT_DATA_BITS);
-        int stopBits = call.getInt("stopBits", Const.DEFAULT_STOP_BITS);
-        String parityKey = call.getString("parity");
+        int dataBits  = call.getInt("dataBits",  Const.DEFAULT_DATA_BITS);
+        int stopBits  = call.getInt("stopBits",  Const.DEFAULT_STOP_BITS);
+
+        // Paridad: el JS te puede enviar string ("none"/"even"/...) o número (0..4). Soporta ambas.
         int parity = Const.DEFAULT_PARITY;
-        if (Const.PARITY.containsKey(parityKey)) parity = Const.PARITY.get(parityKey);
-        if (!Const.STOP_BITS.containsKey(stopBits)) call.reject("Invalid int value for stopBits: " + stopBits);
+        if (call.hasOption("parity")) {
+            try {
+                String parityKey = call.getString("parity");
+                if (Const.PARITY.containsKey(parityKey)) {
+                    parity = Const.PARITY.get(parityKey);
+                }
+            } catch (Exception ignored) {
+                parity = call.getInt("parity", Const.DEFAULT_PARITY);
+            }
+        }
+
+        if (!Const.STOP_BITS.containsKey(stopBits)) {
+            call.reject("Invalid value for stopBits: " + stopBits);
+            return; // <-- importante: salir si es inválido
+        }
+
         UsbDeviceConnection connection = manager.openDevice(device);
         if (connection == null) {
             call.reject("Failed to open device connection");
             return;
         }
+
         UsbSerialPort port = driver.getPorts().get(0);
         try {
             port.open(connection);
+
+            // --- CAMBIOS CLAVE ---
             port.setParameters(baudRate, dataBits, stopBits, parity);
+            port.setDTR(true);                                  // activa DTR
+            port.setRTS(true);                                  // activa RTS
+            port.purgeHwBuffers(true, true);                    // limpia RX/TX
+            // ---------------------
+            
+            Log.d(TAG, "OPEN ok @ " + baudRate + " " + dataBits + "N" + stopBits + " DTR/RTS=ON");
+
             String key = generatePortKey(device);
             activePorts.put(key, port);
             call.resolve();
         } catch (Exception e) {
+            Log.e(TAG, "open/init failed", e);
             call.reject("Failed to initialize connection with selected device: " + e.getMessage());
         }
     }
@@ -142,7 +181,6 @@ public class UsbSerial {
             call.reject("Invalid port key");
             return;
         }
-
         try {
             UsbSerialPort port = activePorts.get(portKey);
             port.close();
@@ -195,8 +233,7 @@ public class UsbSerial {
     public void write(PluginCall call) {
         String portKey = call.getString("key");
         String message = call.getString("message");
-        Boolean noRead = call.getBoolean("noRead", false);
-
+        // Boolean noRead = call.getBoolean("noRead", false);  // ya no usamos noRead
         UsbSerialPort port = activePorts.get(portKey);
         if (port == null) {
             call.reject("Specified port not found: " + portKey);
@@ -206,31 +243,13 @@ public class UsbSerial {
         try {
             byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
             port.write(messageBytes, Const.WRITE_WAIT_MILLIS);
+            Log.d(TAG, "WRITE " + messageBytes.length + "B: " + toHex(messageBytes, messageBytes.length));
 
-            if (!noRead) {
-                byte[] clearBuffer = new byte[8192];
-                port.read(clearBuffer, 10);
+            // ✅ NO LEER DESPUÉS DE ESCRIBIR
+            JSObject result = new JSObject();
+            result.put("bytesWritten", messageBytes.length);
+            call.resolve(result);
 
-                byte[] buffer = new byte[8192];
-                int numBytesRead = port.read(buffer, Const.READ_WAIT_MILLIS);
-
-                if (numBytesRead < 0) {
-                    JSObject result = new JSObject();
-                    result.put("data", "Read operation failed after write");
-                    result.put("bytesRead", 0);
-                    call.resolve(result);
-                    return;
-                }
-
-                String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8).trim();
-
-                JSObject result = new JSObject();
-                result.put("data", data);
-                result.put("bytesRead", numBytesRead);
-                call.resolve(result);
-            } else {
-                call.resolve();
-            }
         } catch (Exception e) {
             call.reject("Communication with port failed: " + e.getMessage());
         }
@@ -243,20 +262,26 @@ public class UsbSerial {
             call.reject("Specified port not found");
             return;
         }
-        try {
-            byte[] buffer = new byte[8192];
-            int numBytesRead = port.read(buffer, Const.READ_WAIT_MILLIS);
 
-            if (numBytesRead < 0) {
-                call.reject("Read operation failed");
-                return;
+        try {
+            byte[] buf = new byte[4096];
+            int total = 0;
+            long end = System.currentTimeMillis() + 1500; // ventana 1.5 s
+            StringBuilder out = new StringBuilder();
+
+            while (System.currentTimeMillis() < end) {
+                int n = port.read(buf, 100); // trozos de 100 ms
+                if (n > 0) {
+                    total += n;
+                    Log.d(TAG, "READ chunk n=" + n + " HEX=" + toHex(buf, n));
+                    out.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    if (n < buf.length) break; // heurística: no parece haber más
+                }
             }
 
-            String data = new String(buffer, 0, numBytesRead, StandardCharsets.UTF_8).trim();
-
             JSObject result = new JSObject();
-            result.put("data", data);
-            result.put("bytesRead", numBytesRead);
+            result.put("data", out.toString().trim());
+            result.put("bytesRead", total);
             call.resolve(result);
         } catch (Exception e) {
             call.reject("Failed to read data: " + e.getMessage());
@@ -266,13 +291,10 @@ public class UsbSerial {
     public void getActivePorts(PluginCall call) {
         JSObject result = new JSObject();
         JSArray keysArray = new JSArray();
-
         for (String key : activePorts.keySet()) {
             keysArray.put(key);
         }
-
         result.put("ports", keysArray);
         call.resolve(result);
     }
-
 }

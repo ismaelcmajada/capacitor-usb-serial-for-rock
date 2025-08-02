@@ -7,8 +7,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class Const {
-    static final int WRITE_WAIT_MILLIS = 500;
-    static final int READ_WAIT_MILLIS = 500;
+    static final int WRITE_WAIT_MILLIS = 1500;
+    static final int READ_WAIT_MILLIS = 1500;
     static final int DEFAULT_BAUD_RATE = 9600;
     static final int DEFAULT_DATA_BITS = 8;
     static final int DEFAULT_STOP_BITS = UsbSerialPort.STOPBITS_1;
