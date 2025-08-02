@@ -1,4 +1,4 @@
-# capacitor-usb-serial
+# capacitor-usb-serial-for-rock
 
 This plugin provides a simple interface for USB serial communication in Capacitor applications. It allows you to connect to USB devices, send and receive data, and manage multiple device connections.
 
@@ -9,7 +9,7 @@ If you want to contribute the apple part feel free to open an issue / PR on the 
 ## Install
 
 ```bash
-npm install capacitor-usb-serial
+npm install capacitor-usb-serial-for-rock
 npx cap sync
 ```
 

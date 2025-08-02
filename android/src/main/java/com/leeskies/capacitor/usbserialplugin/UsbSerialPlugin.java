@@ -1,4 +1,4 @@
-package com.leeskies.capacitor.usbserialplugin;
+package com.ismaelcmajada.capacitor.usbserialplugin;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.JSArray;

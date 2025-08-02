@@ -1,5 +1,5 @@
 {
-  "name": "capacitor-usb-serial",
+  "name": "capacitor-usb-serial-for-rock",
   "version": "1.0.3",
   "description": "This capacitor plugin allows basic serial-over-usb functionality",
   "main": "dist/plugin.cjs.js",
@@ -15,14 +15,14 @@
     "Package.swift",
     "CapacitorUsbSerial.podspec"
   ],
-  "author": "leeskies",
+  "author": "ismaelcmajada",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LeeSkies/capacitor-usb-serial.git"
+    "url": "git+https://github.com/ismaelcmajada/capacitor-usb-serial-for-rock.git"
   },
   "bugs": {
-    "url": "https://github.com/LeeSkies/capacitor-usb-serial/issues"
+    "url": "https://github.com/ismaelcmajada/capacitor-usb-serial-for-rock/issues"
   },
   "keywords": [
     "capacitor",

@@ -1,4 +1,4 @@
-import { UsbSerial } from 'capacitor-usb-serial';
+import { UsbSerial } from 'capacitor-usb-serial-for-rock';
 
 window.testEcho = () => {
     const inputValue = document.getElementById("echoInput").value;

@@ -1,4 +1,4 @@
-package com.leeskies.capacitor.usbserialplugin;
+package com.ismaelcmajada.capacitor.usbserialplugin;
 
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
