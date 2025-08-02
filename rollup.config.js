@@ -4,7 +4,7 @@ export default {
     {
       file: 'dist/plugin.js',
       format: 'iife',
-      name: 'capacitorUsbSerial',
+      name: 'CapacitorUsbSerialForRock',
       globals: {
         '@capacitor/core': 'capacitorExports',
       },

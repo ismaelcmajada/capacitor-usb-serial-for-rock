@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "CapacitorUsbSerial",
+    name: "CapacitorUsbSerialForRock",
     platforms: [.iOS(.v13)],
     products: [
         .library(
-            name: "CapacitorUsbSerial",
+            name: "CapacitorUsbSerialForRock",
             targets: ["UsbSerialPlugin"])
     ],
     dependencies: [
