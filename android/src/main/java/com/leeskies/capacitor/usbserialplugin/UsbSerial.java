@@ -94,49 +94,52 @@ public class UsbSerial {
     }
 
     private void requestUsbPermission(UsbDevice device, PluginCall call) {
-        String appName = context.getApplicationInfo().loadLabel(context.getPackageManager()).toString();
-        String ACTION_USB_PERMISSION = appName + ".USB_PERMISSION";
+        // 1) Usa packageName, no app label
+        final String ACTION_USB_PERMISSION = context.getPackageName() + ".USB_PERMISSION";
 
+        // 2) En Android 12+ el PendingIntent DEBE ser MUTABLE
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            flags |= PendingIntent.FLAG_IMMUTABLE;
+            flags |= PendingIntent.FLAG_MUTABLE; // <— antes ponías FLAG_IMMUTABLE
         }
+
         PendingIntent permissionIntent =
-                PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
+            PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
 
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+
         BroadcastReceiver usbReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context ctx, Intent intent) {
-                String action = intent.getAction();
-                if (ACTION_USB_PERMISSION.equals(action)) {
-                    synchronized (this) {
-                        UsbDevice usbDevice = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                        if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                            if (usbDevice != null) {
-                                UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(usbDevice);
-                                proceedWithConnection(driver, usbDevice, call);
-                            } else {
-                                call.reject("USB device was null after granting permission");
+            @Override public void onReceive(Context ctx, Intent intent) {
+                if (!ACTION_USB_PERMISSION.equals(intent.getAction())) return;
+                try {
+                    UsbDevice usbDevice = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+                    if (granted && usbDevice != null) {
+                        // Asegurar driver no-null
+                        UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(usbDevice);
+                        if (driver == null) {
+                            for (UsbSerialDriver d : UsbSerialProber.getDefaultProber().findAllDrivers(manager)) {
+                                if (d.getDevice().getDeviceId() == usbDevice.getDeviceId()) { driver = d; break; }
                             }
-                        } else {
-                            call.reject("USB permission denied");
                         }
+                        if (driver == null) { call.reject("No UsbSerialDriver for " + usbDevice.getDeviceName()); return; }
+                        proceedWithConnection(driver, usbDevice, call);
+                    } else {
+                        call.reject("USB permission denied");
                     }
-                    try {
-                        ctx.unregisterReceiver(this);
-                    } catch (IllegalArgumentException ignore) { }
+                } finally {
+                    try { ctx.unregisterReceiver(this); } catch (Exception ignore) {}
                 }
             }
         };
-        
-        // Fix para Android 13+ (API 33): requiere flag de exportación al registrar receivers
+
+        // 3) Android 13+: receiver no exportado
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             context.registerReceiver(usbReceiver, filter);
         }
-        
+
         manager.requestPermission(device, permissionIntent);
     }
 
