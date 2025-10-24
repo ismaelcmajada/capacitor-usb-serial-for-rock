@@ -129,7 +129,14 @@ public class UsbSerial {
                 }
             }
         };
-        context.registerReceiver(usbReceiver, filter);
+        
+        // Fix para Android 13+ (API 33): requiere flag de exportación al registrar receivers
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            context.registerReceiver(usbReceiver, filter);
+        }
+        
         manager.requestPermission(device, permissionIntent);
     }
 
