@@ -94,35 +94,35 @@ public class UsbSerial {
     }
 
     private void requestUsbPermission(UsbDevice device, PluginCall call) {
-        // 1) Usa packageName, no app label
         final String ACTION_USB_PERMISSION = context.getPackageName() + ".USB_PERMISSION";
 
-        // 2) En Android 12+ el PendingIntent DEBE ser MUTABLE
+        // Intent explícito por paquete (sigue siendo por acción, pero limitado a tu app)
+        Intent intent = new Intent(ACTION_USB_PERMISSION).setPackage(context.getPackageName());
+
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            flags |= PendingIntent.FLAG_MUTABLE; // <— antes ponías FLAG_IMMUTABLE
+            // U/34+ exige IMMUTABLE para implícitos; IMMUTABLE también es válido en S/31–T/33
+            flags |= PendingIntent.FLAG_IMMUTABLE;
         }
 
         PendingIntent permissionIntent =
-            PendingIntent.getBroadcast(context, 0, new Intent(ACTION_USB_PERMISSION), flags);
+            PendingIntent.getBroadcast(context, 0, intent, flags);
 
+        // Receiver dinámico compatible
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-
         BroadcastReceiver usbReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context ctx, Intent intent) {
                 if (!ACTION_USB_PERMISSION.equals(intent.getAction())) return;
                 try {
                     UsbDevice usbDevice = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                    boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
-                    if (granted && usbDevice != null) {
-                        // Asegurar driver no-null
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && usbDevice != null) {
                         UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(usbDevice);
                         if (driver == null) {
                             for (UsbSerialDriver d : UsbSerialProber.getDefaultProber().findAllDrivers(manager)) {
                                 if (d.getDevice().getDeviceId() == usbDevice.getDeviceId()) { driver = d; break; }
                             }
                         }
-                        if (driver == null) { call.reject("No UsbSerialDriver for " + usbDevice.getDeviceName()); return; }
+                        if (driver == null) { call.reject("No UsbSerialDriver for device"); return; }
                         proceedWithConnection(driver, usbDevice, call);
                     } else {
                         call.reject("USB permission denied");
@@ -133,11 +133,15 @@ public class UsbSerial {
             }
         };
 
-        // 3) Android 13+: receiver no exportado
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            context.registerReceiver(usbReceiver, filter);
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                context.registerReceiver(usbReceiver, filter);
+            }
+        } catch (SecurityException e) {
+            // último recurso: intenta legacy
+            try { context.registerReceiver(usbReceiver, filter); } catch (Exception ignore) {}
         }
 
         manager.requestPermission(device, permissionIntent);
